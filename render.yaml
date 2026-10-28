@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: experiment-7-customer-support-rag
+    runtime: python
+    plan: free
+    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: HF_TOKEN
+        sync: false
+      - key: HF_MODEL
+        value: Qwen/Qwen2.5-0.5B-Instruct
+      - key: HF_API_URL
+        value: https://router.huggingface.co/v1/chat/completions
