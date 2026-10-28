@@ -1,10 +1,11 @@
 import logging, os, requests
 from typing import TypedDict, List
+from functools import lru_cache
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_community.vectorstores import FAISS
 from langgraph.graph import StateGraph, START, END
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
 
 logger = logging.getLogger("support_rag")
 FAQ = """
@@ -21,12 +22,28 @@ If the website is not loading, refresh, check your internet connection, and try 
 Contact Support
 For issues not covered by these FAQs, contact support through the Help section. Include a brief description and relevant order reference, but do not send passwords, one-time codes, or full payment-card details.
 """
-# Chunk FAQ text and create a vector store once when the application starts.
-doc = Document(page_content=FAQ, metadata={"source": "support_faq.txt"})
-chunks = RecursiveCharacterTextSplitter(chunk_size=450, chunk_overlap=60).split_documents([doc])
-embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-store = FAISS.from_documents(chunks, embeddings)
-retriever = store.as_retriever(search_type="similarity", search_kwargs={"k": 3})
+
+@lru_cache(maxsize=1)
+def _get_chunks():
+    doc = Document(page_content=FAQ, metadata={"source": "support_faq.txt"})
+    return RecursiveCharacterTextSplitter(chunk_size=450, chunk_overlap=60).split_documents([doc])
+
+@lru_cache(maxsize=1)
+def _get_matrix_and_vectorizer():
+    chunks = _get_chunks()
+    vectorizer = TfidfVectorizer(stop_words="english", ngram_range=(1, 2))
+    matrix = vectorizer.fit_transform([d.page_content for d in chunks])
+    return matrix, vectorizer
+
+def _get_matrix():
+    return _get_matrix_and_vectorizer()[0]
+
+# Expose vectorizer via a lightweight cached property-style helper.
+class _VectorizerProxy:
+    def transform(self, texts):
+        return _get_matrix_and_vectorizer()[1].transform(texts)
+
+_vectorizer = _VectorizerProxy()
 
 class State(TypedDict, total=False):
     question: str
@@ -49,7 +66,13 @@ def classify(s):
     return {"intent": intent, "search_query": s["question"], "retry_count": s.get("retry_count", 0)}
 
 def retrieve(s):
-    docs = retriever.invoke(s["search_query"])
+    # Lightweight TF-IDF retrieval avoids loading PyTorch and a transformer model on Render's 512 MiB free instance.
+    chunks = _get_chunks()
+    matrix = _get_matrix()
+    query_vector = _vectorizer.transform([s["search_query"]])
+    scores = cosine_similarity(query_vector, matrix).ravel()
+    top_indices = scores.argsort()[::-1][:3]
+    docs = [chunks[i] for i in top_indices if scores[i] > 0]
     return {"context": "\n\n".join(d.page_content for d in docs),
             "sources": [d.metadata.get("source", "support_faq.txt") for d in docs]}
 
@@ -103,3 +126,4 @@ def ask_support(question):
     result = graph.invoke({"question":question,"retry_count":0})
     return {"answer":result.get("final_answer",""),"intent":result.get("intent","general_support"),
             "sources":sorted(set(result.get("sources",[]))),"retry_count":result.get("retry_count",0)}
+
