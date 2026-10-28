@@ -13,3 +13,4 @@ services:
         value: Qwen/Qwen2.5-0.5B-Instruct
       - key: HF_API_URL
         value: https://router.huggingface.co/v1/chat/completions
+
