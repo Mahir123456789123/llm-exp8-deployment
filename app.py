@@ -45,3 +45,5 @@ def ask(request: AskRequest):
     except Exception:
         logger.exception("ask_failed")
         raise HTTPException(status_code=502, detail="The answer service is temporarily unavailable. Check the Render logs and inference configuration.")
+
+
